@@ -59,13 +59,13 @@ __global__ static void convol(int iter,double * train,double * kernel,double * r
 
 	//每个线程负责一个卷积核与一个3*3*hight柱状图像的卷积
 	if (id < KER_NUM){
-		__shared__ double train_tmp[3*3*200];
+		extern __shared__ double train_tmp[];
 
-		copy_data_to_shared(train,train_tmp,3*3*200);//复制train到shared memory中
+		copy_data_to_shared(train,train_tmp,x*y*z);//复制train到shared memory中
 
-		double * ker = new double [9*P_NUM];//载入对应的kernel
-		for(int i=0; i<9*P_NUM; i++){
-			ker[i] = kernel[id*9*P_NUM + i];
+		double * ker = new double [x*y*P_NUM];//载入对应的kernel到寄存器
+		for(int i=0; i<x*y*P_NUM; i++){
+			ker[i] = kernel[id*x*y*P_NUM + i];
 		}
 
 		int dim_x = 0, dim_y = 0, dim_z = 0;//初始位置为(0,0,0)
@@ -76,9 +76,9 @@ __global__ static void convol(int iter,double * train,double * kernel,double * r
 			mid = 0.0;
 
 			for(int i_0=0;i_0<P_NUM;i_0++){//每次进行3*3*P_NUM的像素块的卷积
-				for(int i=0;i<3;i++){
-					for(int j=0;j<3;j++){
-						mid =mid + train_tmp[dim_x+j + (dim_y+i) * x + (dim_z+i_0)*x*y] * ker[j + i*3 + i_0*9];
+				for(int i=0;i<x;i++){
+					for(int j=0;j<y;j++){
+						mid =mid + train_tmp[dim_x+j + (dim_y+i) * x + (dim_z+i_0)*x*y] * ker[j + i*x + i_0*x*y];
 					}
 				}
 			}
@@ -96,11 +96,13 @@ __global__ static void maxpooling(int iter,double * re,double * mre,int re_size,
 	int threadNum = blockDim.x * gridDim.x;
        	int id = tid + iter * threadNum; 
 	
+	//int res = re_size, mres = mre_num;
+
 	if(id < KER_NUM){
 		double mid;
 		for(int i=0; i<mre_num; i++){
 			mid = re[i*GP_NUM + id*re_size];//存放每组第一个值
-			for(int j=i*GP_NUM+1;j<(i+1)*GP_NUM;j++){
+			for(int j=i*GP_NUM+1; j<(i+1)*GP_NUM; j++){
 				if(j >= re_size)
 					break;
 				if(mid < re[j + id*re_size])
@@ -119,7 +121,8 @@ __global__ static void fullconnect(int iter,double * mre,double * omega,double *
 
 	if(id < NEU_NUM1){
 		//复制mre数组到共享内存
-		__shared__ double mre_tmp[200 * KER_NUM]; 
+		//__shared__ double mre_tmp[MAX_MRE_LEN * KER_NUM];
+	        extern __shared__ double mre_tmp[];	
 		copy_data_to_shared(mre,mre_tmp,mre_size);
 		
 		//计算神经元的输出
@@ -156,6 +159,9 @@ __global__ static void output(int iter, double * F1, double * omega2, double * O
 		O2[id] = mid;//暂未定义激活函数
 	}
 }
+
+//反向传播
+
 
 //训练CNN
 int training(double * train, double * labels, int x,int y,int z){
@@ -213,7 +219,7 @@ int training(double * train, double * labels, int x,int y,int z){
 	int threadNum = blocksize * gridsize;
 
 	int mre_num = re_size/GP_NUM + 1;
-	if(re_size == 0){
+	if(re_size/GP_NUM == 0){
 		mre_num = re_size / GP_NUM;
 	}
 	fprintf(stdout,"mre_num:%d\n",mre_num);
@@ -253,7 +259,7 @@ int training(double * train, double * labels, int x,int y,int z){
 
 	for(int iter=0; iter <= KER_NUM/threadNum; iter++){
 		//卷积，每个线程负责一个卷积核和训练数据的卷积
-		convol<<<gridsize,blocksize>>>(iter,gpu_train,gpu_kernel,gpu_re,x,y,z,re_size);
+		convol<<<gridsize,blocksize,x*y*z*sizeof(double)>>>(iter,gpu_train,gpu_kernel,gpu_re,x,y,z,re_size);
 		
 		//下采样，maxpooling方法，每个线程负责re的一列
 		maxpooling<<<gridsize,blocksize>>>(iter,gpu_re,gpu_mre,re_size,mre_num);
@@ -261,7 +267,7 @@ int training(double * train, double * labels, int x,int y,int z){
 
 	for(int iter=0; iter<=NEU_NUM1/threadNum; iter++){
 		//全连接层
-		fullconnect<<<gridsize,blocksize>>>(iter,gpu_mre,gpu_omega1,gpu_F1,mre_size);
+		fullconnect<<<gridsize,blocksize,mre_size * sizeof(double)>>>(iter,gpu_mre,gpu_omega1,gpu_F1,mre_size);
 	}
 
 	for(int iter=0; iter<=NEU_NUM2/threadNum; iter++){
@@ -313,9 +319,6 @@ int main(int argc, char * argv[])
 	//fprintf(stdout,"Dim:%d %d %d\n",dim[0],dim[1],dim[2]);
 	//fprintf(stdout,"trainset: %lf %lf %lf... %lf %lf...%lf %lf\n", trainset[0],trainset[1],trainset[2],trainset[145],trainset[146],trainset[21025],trainset[21026]);
 
-	//double ker[9] = {0,0,0,0,1,0,0,0,0};
-	//int P_NUM = 3;//每次卷积的层数
-	//int LEAP = 2;//跳步数
 	start = clock();
 	int tr = training(trainset,trainlabels,dim[0],dim[1],dim[2]);
 	end = clock();
