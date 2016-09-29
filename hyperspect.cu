@@ -63,10 +63,10 @@ __global__ static void convol(int iter,double * train,double * kernel,double * r
 
 		copy_data_to_shared(train,train_tmp,x*y*z);//复制train到shared memory中
 
-		double * ker = new double [x*y*P_NUM];//载入对应的kernel到寄存器
+		/*double * ker = new double [x*y*P_NUM];//载入对应的kernel到寄存器
 		for(int i=0; i<x*y*P_NUM; i++){
 			ker[i] = kernel[id*x*y*P_NUM + i];
-		}
+		}*/
 
 		int dim_x = 0, dim_y = 0, dim_z = 0;//初始位置为(0,0,0)
 
@@ -78,7 +78,7 @@ __global__ static void convol(int iter,double * train,double * kernel,double * r
 			for(int i_0=0;i_0<P_NUM;i_0++){//每次进行3*3*P_NUM的像素块的卷积
 				for(int i=0;i<x;i++){
 					for(int j=0;j<y;j++){
-						mid =mid + train_tmp[dim_x+j + (dim_y+i) * x + (dim_z+i_0)*x*y] * ker[j + i*x + i_0*x*y];
+						mid =mid + train_tmp[dim_x+j + (dim_y+i) * x + (dim_z+i_0)*x*y] * kernel[j + i*x + i_0*x*y + id*x*y*P_NUM];
 					}
 				}
 			}
