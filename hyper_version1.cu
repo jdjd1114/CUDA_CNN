@@ -189,10 +189,12 @@ int training(double * data, double * labels, int x, int y, int z){
 	double * gpu_data;//显存上存储原始数据
 	double * gpu_processed_train;//显存上存储处理之后的数据
 	int * gpu_train_index;//训练数据的索引
+	double * gpu_processed_labels;
 
 	//计算有标签像素的个数
 	int train_size = 0;
 	int * train_index = new int [x*y * (NEIGHBOR + 1)];//9行，x*y列。每列保存一个像素及其邻居的索引位置
+	double * processed_labels = new double [x*y];
 	for (int i=0; i<x*y; i++){
 		if (labels[i] != 0){
 			train_index[(NEIGHBOR/2) + train_size * (NEIGHBOR+1)] = i;//当前像素索引
@@ -203,29 +205,30 @@ int training(double * data, double * labels, int x, int y, int z){
 				train_index[j0+6 + train_size * (NEIGHBOR+1)] = i - 1 + x + j0;
 			}
 
-			if((i % 145) == 0){
+			if((i % x) == 0){//第一行
 				for (int j=0; j<3; j++)
 					train_index[j*3 + train_size*(NEIGHBOR+1)] = train_index[j*3+2 + train_size*(NEIGHBOR+1)];
 			}
-			if((i % 145) == 144){
+			if((i % x) == (x-1)){//最后一行
 				for(int j=0;j<3;j++)
 					train_index[j*3+2 + train_size*(NEIGHBOR+1)] = train_index[j*3 + train_size*(NEIGHBOR+1)];
 			}
-			if((i/145) == 0){
+			if((i/x) == 0){//第一列
 				for(int j=0;j<3;j++)
 					train_index[j + train_size*(NEIGHBOR+1)] = train_index[j+6 + train_size*(NEIGHBOR+1)];
 			}
-			if((i/145) == 144){
+			if((i/x) == (y-1)){//最后一列
 				for(int j=0;j<3;j++)
 					train_index[j+6  + train_size*(NEIGHBOR+1)] = train_index[j + train_size*(NEIGHBOR+1)];
 			}
 
+			processed_labels[train_size] = labels[i];
 			train_size = train_size + 1;
 		}
 	}
 	fprintf(stdout,"train_size:%d\n",train_size);
 	fprintf(stdout,"train_index[0]:%d %d %d %d,%d %d %d %d\n",train_index[0],train_index[1],train_index[2],train_index[3],train_index[5],train_index[6],train_index[7],train_index[8]);
-	fprintf(stdout,"train_index[10248]:%d %d %d %d,%d %d %d %d\n",train_index[9*10248],train_index[1+9*10248],train_index[2+9*10248],train_index[3+9*10248],train_index[5+9*10248],train_index[6+9*10248],train_index[7+9*10248],train_index[8+9*10248]);
+	//fprintf(stdout,"train_index[5211]:%d %d %d %d,%d %d %d %d\n",train_index[46890],train_index[46891],train_index[46892],train_index[46893],train_index[46895],train_index[46896],train_index[46897],train_index[46898]);
 	
 	//int * train_index = new int [train_size * (NEIGHBOR + 1)];//train_size列，9行。每行保存一个像素及其邻居的索引位置
 
@@ -255,7 +258,7 @@ int training(double * data, double * labels, int x, int y, int z){
 	//fprintf(stdout,"Processed train data:%lf %lf %lf %lf\n",processed_train[0],processed_train[1],processed_train[2],processed_train[3]);
 	
 	//前向传播
-	double * kernel = new double [3*3*P_NUM*KER_NUM];
+	double * kernel = new double [(NEIGHBOR+1)*P_NUM*KER_NUM];
 
 	//随机生成kernekl数组
 	for(int i=0; i<(NEIGHBOR+1)*P_NUM*KER_NUM; i++){
@@ -273,7 +276,7 @@ int training(double * data, double * labels, int x, int y, int z){
 	//double * re = new double [re_size * KER_NUM];
 	fprintf(stdout,"Size of re:%d\n",re_size);
 	
-	double * gpu_labels;
+	//double * gpu_labels;
 	double * gpu_kernel;
 	double * gpu_re;//存放卷积结果
 	double * gpu_mre;//存放maxpooling结果
@@ -283,8 +286,8 @@ int training(double * data, double * labels, int x, int y, int z){
 	double * gpu_O2;
 
 	//复制标签
-	SAFE_CALL(cudaMalloc((void**) &gpu_labels,sizeof(double) * x * y));
-	SAFE_CALL(cudaMemcpy(gpu_labels,labels,sizeof(double) * x * y,cudaMemcpyHostToDevice));
+	SAFE_CALL(cudaMalloc((void**) &gpu_processed_labels, sizeof(double) * train_size));
+	SAFE_CALL(cudaMemcpy(gpu_processed_labels,processed_labels,sizeof(double) * train_size,cudaMemcpyHostToDevice));
 	//复制随机初始化的kernel数组
 	SAFE_CALL(cudaMalloc((void**) &gpu_kernel,sizeof(double) * (NEIGHBOR+1) * P_NUM * KER_NUM));
 	SAFE_CALL(cudaMemcpy(gpu_kernel,kernel,sizeof(double) * (NEIGHBOR+1) * P_NUM * KER_NUM,cudaMemcpyHostToDevice));
