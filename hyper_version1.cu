@@ -3,6 +3,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <math.h>
+#include <matrix.h>
 #include <iostream>
 #include "cublas_v2.h"
 #include "cokus.cpp"
@@ -15,10 +16,10 @@ const int P_NUM = 3;//每次卷积的层数
 const int LEAP = 2;//跳数
 const int GP_NUM = 5;//maxpooling每组的个数
 const int NEU_NUM1 = 100;
-const int NEU_NUM2 = 16;//输出层神经元个数
+const int NEU_NUM2 = 13;//输出层神经元个数
 const int NEIGHBOR = 8;//定义邻居个数
-const double LEARN_RATE = 0.05;
-const double MIN_ERR = 0.00001;
+const double LEARN_RATE = 0.5;
+const double MIN_ERR = 0.0001;
 //const int DATA_BATCH = 512;//每次处理512个像素对应的数据
 
 //CUDA初始化
@@ -278,15 +279,60 @@ double lossfunction(double * output, double * labels, int idx){
 	return l;
 }
 
+
+//计算正确率
+double count_err(double * test_labels, double * output, int test_idx)
+{
+	double right=0;
+	double max =0;
+	int idx = 0;
+	for(int i=0; i<NEU_NUM2; i++){
+		if(output[i]>max){
+			max = output[i];
+			idx = i;
+		}
+	}
+	if((idx+1) == int(test_labels[test_idx]))
+		right = 1;
+	
+	return right;
+}
+
+//shuffle
+void shuffle(int * data, double * labels, int dim_row, int width){
+	int index,  i;
+	int temp;
+	double tmp;
+	srand(time(NULL));
+	for(i=0; i<width; i++){
+		index=rand()%(width-i) + i;
+		if(index != i){
+			for(int j=0; j<dim_row; j++){
+				temp = data[j + i*dim_row];
+				data[j + i*dim_row] = data[j +index*dim_row];
+				data[j + index*dim_row] = temp;
+			}
+
+			for(int j=0; j<NEU_NUM2; j++){
+				tmp = labels[j + i*NEU_NUM2];
+				labels[j + i*NEU_NUM2] = labels[j + index*NEU_NUM2];
+				labels[j + index*NEU_NUM2] = tmp;
+			}
+		}
+	}
+}
+
 //训练
-int training(double * data, double * labels, int x, int y, int z){
+double training(double * data, double * labels, int x, int y, int z){
+	clock_t start, end;
+	start = clock();	
 	double * gpu_data;//显存上存储原始数据
 	double * gpu_processed_train;//显存上存储处理之后的数据
 	double * gpu_processed_test;
 	int * gpu_train_index;//训练数据的索引
 	int * gpu_test_index;
 	double * gpu_processed_labels;
-	double * gpu_test_labels;
+	//double * gpu_test_labels;
 
 	//计算有标签像素的个数
 	int data_size = 0;
@@ -303,7 +349,7 @@ int training(double * data, double * labels, int x, int y, int z){
 	int * train_index = new int [train_size * (NEIGHBOR + 1)];//9行，x*y列。每列保存一个像素及其邻居的索引位置
 	int * test_index = new int [test_size * (NEIGHBOR+1)];
 	double * processed_labels = new double [train_size * NEU_NUM2];
-	double * test_labels = new double [test_size * NEU_NUM2];
+	double * test_labels = new double [test_size];
 	int tr=0, te=0;
 	for (int i=0; i<data_size; i++){
 		if (i%5 != 0){
@@ -362,13 +408,19 @@ int training(double * data, double * labels, int x, int y, int z){
 					test_index[j+6  + te*(NEIGHBOR+1)] = test_index[j + te*(NEIGHBOR+1)];
 			}
 
-			int mid = int(labels[data_index[i]])-1 + te*NEU_NUM2;
-			test_labels[mid] = 1;
+			//int mid = int(labels[data_index[i]])-1 + te*NEU_NUM2;
+			test_labels[te] = labels[data_index[i]];
 			te = te + 1;
 		}
 	}
+	shuffle(train_index, processed_labels, (NEIGHBOR+1), train_size);
 	//fprintf(stdout,"train_size:%d\n",train_size);
-	fprintf(stdout,"train_index:%d %d %d %d,\ntest_index:%d %d %d %d\n",train_index[0],train_index[1],train_index[2],train_index[3],test_index[0],test_index[1],test_index[2],test_index[3]);
+	fprintf(stdout,"train_index:%d %d %d %d\ntrain_index:%d %d %d %d\ntrain_index:%d %d %d %d\n",train_index[0],train_index[1],train_index[2],train_index[3],train_index[9],train_index[10],train_index[11],train_index[12],train_index[18],train_index[19],train_index[20],train_index[21]);
+	fprintf(stdout,"train labels:\n");
+	for(int i=0; i<NEU_NUM2; i++){
+		fprintf(stdout,"%lf ",processed_labels[i]);
+	}
+	fprintf(stdout,"\n");
 	//int * train_index = new int [train_size * (NEIGHBOR + 1)];//train_size列，9行。每行保存一个像素及其邻居的索引位置
 
 
@@ -394,14 +446,18 @@ int training(double * data, double * labels, int x, int y, int z){
 	processing<<<gridsize,blocksize>>>(iter, gpu_data, gpu_train_index, gpu_processed_train, x, y, z, train_size);
 	processing<<<gridsize,blocksize>>>(iter, gpu_data, gpu_test_index, gpu_processed_test, x, y, z, test_size);
 	cudaDeviceSynchronize();
-	SAFE_CALL(cudaMemcpy(processed_train, gpu_processed_train, sizeof(double) * train_size * (NEIGHBOR+1) * z, cudaMemcpyDeviceToHost));
-	SAFE_CALL(cudaMemcpy(processed_test, gpu_processed_test, sizeof(double) * test_size * (NEIGHBOR+1) * z, cudaMemcpyDeviceToHost));
+	end = clock();
+	double tt = double(end - start);
+	fprintf(stdout,"Using time of preprocessing:%lf\n",tt/CLOCKS_PER_SEC);
+	//SAFE_CALL(cudaMemcpy(processed_train, gpu_processed_train, sizeof(double) * train_size * (NEIGHBOR+1) * z, cudaMemcpyDeviceToHost));
+	//SAFE_CALL(cudaMemcpy(processed_test, gpu_processed_test, sizeof(double) * test_size * (NEIGHBOR+1) * z, cudaMemcpyDeviceToHost));
 	SAFE_CALL(cudaFree(gpu_data));
 	SAFE_CALL(cudaFree(gpu_train_index));
 	SAFE_CALL(cudaFree(gpu_test_index));
 	cudaDeviceSynchronize();
-	fprintf(stdout,"Processed train data:%lf %lf %lf %lf\n",processed_train[0],processed_train[1],processed_train[2],processed_train[3]);
-	fprintf(stdout,"Processed test data:%lf %lf %lf %lf\n",processed_test[0],processed_test[1],processed_test[2],processed_test[3]);
+	//fprintf(stdout,"Processed train data:%lf %lf %lf %lf\n",processed_train[0],processed_train[1],processed_train[2],processed_train[3]);
+	//fprintf(stdout,"Processed test data:%lf %lf %lf %lf\n",processed_test[0],processed_test[1],processed_test[2],processed_test[3]);
+	start = clock();
 	//前向传播
 	double * kernel = new double [(NEIGHBOR+1)*P_NUM*KER_NUM];
 
@@ -531,10 +587,11 @@ int training(double * data, double * labels, int x, int y, int z){
 	//double * F1 = new double [NEU_NUM1];//CPU端存放第一层网络输出结果
 	double * O2 = new double [NEU_NUM2];//CPU端存放输出层的结果
 	//double * lz = new double [NEU_NUM2];
-	for(int i0=0;i0<train_size;i0++){
-		if (i0 % 100 == 0)
-			fprintf(stdout,"The %dst iteration.\n",i0);
-		for(int j=0; j<10000; j++){
+	double loss;
+	for(int j=0; j<1001; j++){
+		if (j % 100 == 0)
+			fprintf(stdout,"The %dth iteration.\n",j);
+		for(int i0=0; i0<train_size; i0++){
 			int iter = 0;
 
 			//卷积，每个线程负责一个卷积核和训练数据的卷积
@@ -551,12 +608,12 @@ int training(double * data, double * labels, int x, int y, int z){
 			//输出层
 			output<<<1,NEU_NUM2>>>(iter,gpu_F1,gpu_omega2,gpu_bias2,gpu_O2);
 			cudaDeviceSynchronize();
-			SAFE_CALL(cudaMemcpy(O2, gpu_O2, sizeof(double) * NEU_NUM2, cudaMemcpyDeviceToHost));
-			cudaDeviceSynchronize();
-			double loss = lossfunction(O2, processed_labels, i0);
-			if(i0%100==0 && j%100==0)    fprintf(stdout,"loss:%lf \n",loss);
-			if(loss < MIN_ERR)
-				break;
+			//SAFE_CALL(cudaMemcpy(O2, gpu_O2, sizeof(double) * NEU_NUM2, cudaMemcpyDeviceToHost));
+			//cudaDeviceSynchronize();
+			//loss = lossfunction(O2, processed_labels, i0);
+			//if(i0%100==0 && j%100==0)    fprintf(stdout,"loss:%lf \n",loss);
+			//if(loss < MIN_ERR)
+			//	break;
 
 			//反向传播，输出层
 			bp_output<<<1,NEU_NUM2>>>(iter,i0,gpu_processed_labels,gpu_O2,gpu_bias2,gpu_delta_La,gpu_delta_Lz);
@@ -570,38 +627,105 @@ int training(double * data, double * labels, int x, int y, int z){
 
 			cudaDeviceSynchronize();
 			//SAFE_CALL(cudaMemcpy(O2, gpu_O2, sizeof(double) * NEU_NUM2, cudaMemcpyDeviceToHost));
-			/*if(i0%100 ==0 && j%100 == 0){
+			/*if(i0<10 && j == 0){
 				fprintf(stdout,"Output:\n ");
 				for(int j=0; j<NEU_NUM2; j++)
 					fprintf(stdout," %lf",O2[j]);
 				fprintf(stdout,"\n");
 			}*/
 		}
+		//double loss = lossfunction(O2, processed_labels, i0);
+		//if(j%100 == 0)	fprintf(stdout,"loss:%lf \n",loss);
+		//if(loss < MIN_ERR)	break;
 	}
 
 	fprintf(stdout,"Training completed!\n");
+	end = clock();
+	tt = double(end - start);
+	fprintf(stdout,"Using time of training:%lfs\n",tt/CLOCKS_PER_SEC);
+
+	start = clock();
 	//cudaDeviceSynchronize();
-	//SAFE_CALL(cudaMemcpy(re, gpu_re, sizeof(double) * re_size * KER_NUM, cudaMemcpyDeviceToHost));
-	//SAFE_CALL(cudaMemcpy(mre,gpu_mre,sizeof(double) * mre_num * KER_NUM, cudaMemcpyDeviceToHost));
-	//SAFE_CALL(cudaMemcpy(mre_index,gpu_mre_index,sizeof(int) * mre_size, cudaMemcpyDeviceToHost));
-	//SAFE_CALL(cudaMemcpy(O2,gpu_O2,sizeof(double) * NEU_NUM2, cudaMemcpyDeviceToHost));
-	//SAFE_CALL(cudaMemcpy(omega1, gpu_omega1, sizeof(double) * ome_num1, cudaMemcpyDeviceToHost));
-	//SAFE_CALL(cudaMemcpy(omega2, gpu_omega2, sizeof(double) * ome_num2, cudaMemcpyDeviceToHost));
+	SAFE_CALL(cudaMemcpy(kernel, gpu_kernel, sizeof(double) * (NEIGHBOR+1) * P_NUM * KER_NUM, cudaMemcpyDeviceToHost));
+	SAFE_CALL(cudaMemcpy(bias0, gpu_bias0, sizeof(double) * KER_NUM, cudaMemcpyDeviceToHost));
+	SAFE_CALL(cudaMemcpy(bias1, gpu_bias1, sizeof(double) * NEU_NUM1, cudaMemcpyDeviceToHost));
+	SAFE_CALL(cudaMemcpy(bias2, gpu_bias2, sizeof(double) * NEU_NUM2, cudaMemcpyDeviceToHost));
+	SAFE_CALL(cudaMemcpy(omega1, gpu_omega1, sizeof(double) * ome_num1, cudaMemcpyDeviceToHost));
+	SAFE_CALL(cudaMemcpy(omega2, gpu_omega2, sizeof(double) * ome_num2, cudaMemcpyDeviceToHost));
 	cudaDeviceSynchronize();
+	//fprintf(stdout,"kernel:%lf %lf %lf %lf\n",kernel[0], kernel[1], kernel[2], kernel[3]);
 
-	//fprintf(stdout,"result:%lf %lf %lf\n",re[0],re[5],re[10]);
-	//fprintf(stdout,"result:%lf %lf %lf\n",re[1],re[6],re[11]);
-	//fprintf(stdout,"result:%lf %lf %lf\n",re[2],re[7],re[12]);
-	//fprintf(stdout,"result:%lf %lf %lf\n",re[3],re[8],re[13]);
-	//fprintf(stdout,"result:%lf %lf %lf\n",re[4],re[9],re[14]);
+	//将训练完的参数写入mat文件
+	/*MATFile * pmatFile;
+	pmatFile = matOpen("model.mat","w");
+	mxArray * m1 = mxCreateDoubleMatrix((NEIGHBOR+1)*P_NUM,KER_NUM,mxREAL);
+	memcpy((void *)mxGetPr(m1), (void *)kernel, sizeof(double) * (NEIGHBOR+1) * P_NUM * KER_NUM);
+	matPutVariable(pmatFile, "kernel", m1);
 
+	mxArray * m2 = mxCreateDoubleMatrix(KER_NUM,1,mxREAL);
+	memcpy((void *)mxGetPr(m2), (void *)bias0, sizeof(double) * KER_NUM);
+	matPutVariable(pmatFile, "bias0", m2);
+
+	mxArray * m3 = mxCreateDoubleMatrix(NEU_NUM1,mre_size,mxREAL);
+	memcpy((void *)mxGetPr(m3), (void *)omega1, sizeof(double) * ome_num1);
+	matPutVariable(pmatFile, "omega1", m3);
+
+	mxArray * m4 = mxCreateDoubleMatrix(NEU_NUM1,1,mxREAL);
+       	memcpy((void *)mxGetPr(m4), (void *)bias1, sizeof(double) * NEU_NUM1);
+	matPutVariable(pmatFile, "bias1", m4);
+
+	mxArray * m5 = mxCreateDoubleMatrix(NEU_NUM2,NEU_NUM1,mxREAL);
+	memcpy((void *)mxGetPr(m5), (void *)omega2, sizeof(double) * ome_num2);
+	matPutVariable(pmatFile, "omega2", m5);
+
+	mxArray * m6 = mxCreateDoubleMatrix(NEU_NUM2,1,mxREAL);
+	memcpy((void *)mxGetPr(m6), (void *)bias2, sizeof(double) * NEU_NUM2);
+	matPutVariable(pmatFile, "bias2", m6);
+
+	matClose(pmatFile);*/
 	//fprintf(stdout,"mre:%lf %lf %lf\n",mre[0],mre[1],mre[2]);
 	//fprintf(stdout,"mre_index:%d %d %d\n",mre_index[0],mre_index[1],mre_index[2]);
 
 	//fprintf(stdout,"F1 Output:%lf %lf; %lf %lf\n",F1[0],F1[1],F1[98],F1[99]);
 	//fprintf(stdout,"O2 Output:%lf %lf; %lf %lf\n",O2[0],O2[1],O2[18],O2[19]);
+	//end = clock();
+	//tt = double(end - start);
+	//fprintf(stdout, "Using time of writeback:%lfs\n",tt/CLOCKS_PER_SEC);
 	
-	return 0;
+	//test
+	double right = 0;
+	double count = 0;
+	for (int i1=0; i1<test_size; i1++){
+		int iter = 0;
+		convol<<<1,KER_NUM,(NEIGHBOR+1)*z*sizeof(double)>>>(iter,i1,gpu_processed_test,gpu_kernel,gpu_re,gpu_bias0,3,3,z,re_size);
+		cudaDeviceSynchronize();
+
+		maxpooling<<<1,KER_NUM>>>(iter,gpu_re,gpu_mre,gpu_mre_index,re_size,mre_num);
+		cudaDeviceSynchronize();
+
+		fullconnect<<<1,NEU_NUM1,mre_size * sizeof(double)>>>(iter,gpu_mre,gpu_omega1,gpu_bias1,gpu_F1,mre_size);
+		cudaDeviceSynchronize();
+
+		output<<<1,NEU_NUM2>>>(iter,gpu_F1,gpu_omega2,gpu_bias2,gpu_O2);
+		cudaDeviceSynchronize();
+
+		SAFE_CALL(cudaMemcpy(O2, gpu_O2, sizeof(double) * NEU_NUM2, cudaMemcpyDeviceToHost));
+		cudaDeviceSynchronize();
+
+		if(i1<10){
+			fprintf(stdout,"Output:\n");
+			for (int i=0;i<NEU_NUM2;i++)
+				fprintf(stdout," %lf",O2[i]);
+			fprintf(stdout,"\n");
+		}
+		//fprintf(stdout,"\n");
+		right = count_err(test_labels, O2, i1);
+		count = count + right;
+	}
+	end = clock();
+	tt = double(end - start);
+	fprintf(stdout,"Using time of test:%lf\n",tt/CLOCKS_PER_SEC);
+	return count/test_size;
 }
 
 //主函数
@@ -629,9 +753,10 @@ int main(int argc, char * argv[])
 	dim = mxGetDimensions(train);//获取trainset每维的元素个数
 
 	start = clock();
-	int te = training(trainset, trainlabels, dim[0], dim[1], dim[2]);
+	double correct = training(trainset, trainlabels, dim[0], dim[1], dim[2]);
 	end = clock();
+	fprintf(stdout,"Correct Rate:%lf\n",correct);
 	double usetime = double(end - start);
-	fprintf(stdout, "Using time of preprocessing:%lfs\n",usetime/CLOCKS_PER_SEC);
+	fprintf(stdout, "Using time of the whole procedure:%lfs\n",usetime/CLOCKS_PER_SEC);
 	return 0;
 }
