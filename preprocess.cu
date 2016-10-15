@@ -9,7 +9,7 @@
 #include "cuda_util.h"
 #include <cuda_runtime.h>
 using namespace std;
-
+const int NEU_NUM2 = 13;
 const int NEIGHBOR = 8;//定义邻居个数
 //const int DATA_BATCH = 512;//每次处理512个像素对应的数据
 
@@ -88,7 +88,7 @@ int preprocess(double * data, double * labels, int x, int y, int z){
 	int * train_index = new int [train_size * (NEIGHBOR + 1)];//9行，x*y列。每列保存一个像素及其邻居的索引位置
 	int * test_index = new int [test_size * (NEIGHBOR+1)];
 	double * processed_labels = new double [train_size * NEU_NUM2];
-	double * test_labels = new double [test_size * NEU_NUM2];
+	double * test_labels = new double [test_size];
 	int tr=0, te=0;
 	for (int i=0; i<data_size; i++){
 		if (i%5 != 0){
@@ -132,23 +132,23 @@ int preprocess(double * data, double * labels, int x, int y, int z){
 
 			if((data_index[i] % x) == 0){//第一行
 				for (int j=0; j<3; j++)
-					train_index[j*3 + tr*(NEIGHBOR+1)] = train_index[j*3+2 + tr*(NEIGHBOR+1)];
+					test_index[j*3 + te*(NEIGHBOR+1)] = test_index[j*3+2 + te*(NEIGHBOR+1)];
 			}
 			if((data_index[i] % x) == (x-1)){//最后一行
 				for(int j=0;j<3;j++)
-					train_index[j*3+2 + tr*(NEIGHBOR+1)] = train_index[j*3 + tr*(NEIGHBOR+1)];
+					test_index[j*3+2 + te*(NEIGHBOR+1)] = test_index[j*3 + te*(NEIGHBOR+1)];
 			}
 			if((data_index[i]/x) == 0){//第一列
 				for(int j=0;j<3;j++)
-					train_index[j + tr*(NEIGHBOR+1)] = train_index[j+6 + tr*(NEIGHBOR+1)];
+					test_index[j + te*(NEIGHBOR+1)] = test_index[j+6 + te*(NEIGHBOR+1)];
 			}
 			if((data_index[i]/x) == (y-1)){//最后一列
 				for(int j=0;j<3;j++)
-					train_index[j+6  + tr*(NEIGHBOR+1)] = train_index[j + tr*(NEIGHBOR+1)];
+					test_index[j+6  + te*(NEIGHBOR+1)] = test_index[j + te*(NEIGHBOR+1)];
 			}
 
-			int mid = int(labels[data_index[i]])-1 + te*NEU_NUM2;
-			test_labels[mid] = 1;
+			//int mid = int(labels[data_index[i]])-1 + te*NEU_NUM2;
+			test_labels[te] = labels[data_index[i]];
 			te = te + 1;
 		}
 	}
@@ -191,6 +191,29 @@ int preprocess(double * data, double * labels, int x, int y, int z){
 	//cudaDeviceSynchronize();
 	fprintf(stdout,"Processed train data:%lf %lf %lf %lf\n",processed_train[0],processed_train[1],processed_train[2],processed_train[3]);
 	fprintf(stdout,"Processed test data:%lf %lf %lf %lf\n",processed_test[0],processed_test[1],processed_test[2],processed_test[3]);
+	
+	MATFile * pmatFile;
+	pmatFile = matOpen("testdata.mat","w");
+	mxArray * m1 = mxCreateDoubleMatrix((NEIGHBOR+1)*z,test_size,mxREAL);
+	memcpy((void *)mxGetPr(m1), (void *)processed_test, sizeof(double) * (NEIGHBOR+1) * z * test_size);
+	matPutVariable(pmatFile, "data", m1);
+	
+	mxArray * m2 = mxCreateDoubleMatrix(test_size,1,mxREAL);
+	memcpy((void *)mxGetPr(m2), (void *)test_labels, sizeof(double) * test_size);
+	matPutVariable(pmatFile, "data", m2);
+	matClose(pmatFile);
+	
+	MATFile * pmatFile0;
+	pmatFile0 = matOpen("traindata.mat","w");
+	mxArray * m3 = mxCreateDoubleMatrix((NEIGHBOR+1)*z,train_size,mxREAL);
+	memcpy((void *)mxGetPr(m3), (void *)processed_train, sizeof(double) * (NEIGHBOR+1) * z * train_size);
+	matPutVariable(pmatFile0, "data", m3);
+	
+	mxArray * m4 = mxCreateDoubleMatrix(NEU_NUM2,train_size,mxREAL);
+	memcpy((void *)mxGetPr(m4), (void *)processed_labels, sizeof(double) * train_size * NEU_NUM2);
+	matPutVariable(pmatFile0, "labels", m4);
+	
+	matClose(pmatFile0);
 	return 0;
 }
 
